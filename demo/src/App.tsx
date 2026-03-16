@@ -7,12 +7,13 @@ import {
     athenaChannelNames,
     ATHENA_PRESETS,
     AthenaPreset,
-    zipSamples
+    zipSamples,
 } from 'muse-jsx';
 import { notchFilter, bandpassFilter, epoch } from '@neurosity/pipes';
 import { tap, map, BehaviorSubject, switchMap, Subscription, Observable, share } from 'rxjs';
 import { AthenaLogger } from './AthenaLogger';
 import { EEGRecorder } from './EEGRecorder';
+import { FrequencyBands } from './FrequencyBands';
 import { getRecordings } from './db';
 import { EEGSample } from 'muse-jsx';
 
@@ -36,7 +37,12 @@ type Reading = {
 
 // --- Hook for Muse Logic ---
 
-function useMuse(mode: 'muse' | 'athena', enableAux: boolean, view: 'graph' | 'logger', preset: AthenaPreset = 'p1045') {
+function useMuse(
+    mode: 'muse' | 'athena',
+    enableAux: boolean,
+    view: 'graph' | 'logger' | 'bands',
+    preset: AthenaPreset = 'p1045',
+) {
     const [status, setStatus] = useState<ConnectionStatus>('disconnected');
     const [battery, setBattery] = useState<string>('unknown');
     const [accelerometer, setAccelerometer] = useState({ x: 0, y: 0, z: 0 });
@@ -47,7 +53,7 @@ function useMuse(mode: 'muse' | 'athena', enableAux: boolean, view: 'graph' | 'l
         notchFrequency: 60,
         bandpassEnabled: true,
         bandpassLow: 5,
-        bandpassHigh: 40
+        bandpassHigh: 40,
     });
 
     const clientRef = React.useRef<MuseClient | MuseAthenaClient | null>(null);
@@ -74,22 +80,24 @@ function useMuse(mode: 'muse' | 'athena', enableAux: boolean, view: 'graph' | 'l
             }
 
             // Cleanup previous subscriptions if reconnecting
-            subscriptionsRef.current.forEach(s => s.unsubscribe());
+            subscriptionsRef.current.forEach((s) => s.unsubscribe());
             subscriptionsRef.current = [];
 
             // Sync connection status with component state
-            subscriptionsRef.current.push(client.connectionStatus.subscribe(connected => {
-                if (!connected && status !== 'disconnected') {
-                    setStatus('disconnected');
-                }
-            }));
+            subscriptionsRef.current.push(
+                client.connectionStatus.subscribe((connected) => {
+                    if (!connected && status !== 'disconnected') {
+                        setStatus('disconnected');
+                    }
+                }),
+            );
 
             await client.connect();
             setStatus('connected');
 
             // Handle deviceInfo based on mode
             if (mode === 'muse') {
-                await new Promise(resolve => setTimeout(resolve, 500));
+                await new Promise((resolve) => setTimeout(resolve, 500));
                 try {
                     const info = await (client as any).deviceInfo();
                     console.log('[useMuse] Classic Device Connected:', info);
@@ -97,11 +105,14 @@ function useMuse(mode: 'muse' | 'athena', enableAux: boolean, view: 'graph' | 'l
                     console.warn('Could not retrieve classic device info', err);
                 }
             } else {
-                (client as any).deviceInfo().then((info: any) => {
-                    console.log('[useMuse] Athena Device Connected:', info);
-                }).catch((err: any) => {
-                    console.warn('Could not retrieve Athena device info', err);
-                });
+                (client as any)
+                    .deviceInfo()
+                    .then((info: any) => {
+                        console.log('[useMuse] Athena Device Connected:', info);
+                    })
+                    .catch((err: any) => {
+                        console.warn('Could not retrieve Athena device info', err);
+                    });
             }
 
             if (client instanceof MuseAthenaClient) {
@@ -109,7 +120,6 @@ function useMuse(mode: 'muse' | 'athena', enableAux: boolean, view: 'graph' | 'l
             } else {
                 await client.start();
             }
-
         } catch (e: any) {
             console.error('Connection error:', e);
             setStatus('disconnected');
@@ -123,60 +133,70 @@ function useMuse(mode: 'muse' | 'athena', enableAux: boolean, view: 'graph' | 'l
     useEffect(() => {
         const client = clientRef.current;
         if (status !== 'connected' || !client) {
-            subscriptionsRef.current.forEach(s => s.unsubscribe());
+            subscriptionsRef.current.forEach((s) => s.unsubscribe());
             subscriptionsRef.current = [];
             setFilteredStream$(null);
             return;
         }
 
         // Cleanup previous base subscriptions
-        subscriptionsRef.current.forEach(s => s.unsubscribe());
+        subscriptionsRef.current.forEach((s) => s.unsubscribe());
         subscriptionsRef.current = [];
 
-        const nbChannels = mode === 'athena' ? 8 : (enableAux ? 5 : 4);
+        const nbChannels = mode === 'athena' ? 8 : enableAux ? 5 : 4;
         const samplingRate = 256;
 
         // Sensors (Battery/Accel)
         if (client instanceof MuseClient) {
-            subscriptionsRef.current.push(client.telemetryData.subscribe(t => {
-                setBattery(t.batteryLevel.toFixed(2) + '%');
-            }));
-            subscriptionsRef.current.push(client.accelerometerData.subscribe(accel => {
-                setAccelerometer({ x: accel.samples[2].x, y: accel.samples[2].y, z: accel.samples[2].z });
-            }));
+            subscriptionsRef.current.push(
+                client.telemetryData.subscribe((t) => {
+                    setBattery(t.batteryLevel.toFixed(2) + '%');
+                }),
+            );
+            subscriptionsRef.current.push(
+                client.accelerometerData.subscribe((accel) => {
+                    setAccelerometer({ x: accel.samples[2].x, y: accel.samples[2].y, z: accel.samples[2].z });
+                }),
+            );
         } else if (client instanceof MuseAthenaClient) {
-            subscriptionsRef.current.push(client.batteryData.subscribe(t => {
-                setBattery(String(t.values[0] || '?'));
-            }));
-            subscriptionsRef.current.push(client.accGyroReadings.subscribe(accel => {
-                setAccelerometer({ x: accel.acc?.x || 0, y: accel.acc?.y || 0, z: accel.acc?.z || 0 });
-            }));
+            subscriptionsRef.current.push(
+                client.batteryData.subscribe((t) => {
+                    setBattery(String(t.values[0] || '?'));
+                }),
+            );
+            subscriptionsRef.current.push(
+                client.accGyroReadings.subscribe((accel) => {
+                    setAccelerometer({ x: accel.acc?.x || 0, y: accel.acc?.y || 0, z: accel.acc?.z || 0 });
+                }),
+            );
         }
 
         // EEG with dynamic filtering - Base Filtered Stream
         const baseFilteredStream$ = filterSettings$.current.pipe(
-            switchMap(settings => {
+            switchMap((settings) => {
                 if (!clientRef.current || !client.eegReadings) return [];
                 let stream = client.eegReadings.pipe(zipSamples);
                 if (settings.notchEnabled) {
                     stream = stream.pipe(notchFilter({ nbChannels, cutoffFrequency: settings.notchFrequency }));
                 }
                 if (settings.bandpassEnabled) {
-                    stream = stream.pipe(bandpassFilter({
-                        nbChannels,
-                        cutoffFrequencies: [settings.bandpassLow, settings.bandpassHigh],
-                        samplingRate
-                    }));
+                    stream = stream.pipe(
+                        bandpassFilter({
+                            nbChannels,
+                            cutoffFrequencies: [settings.bandpassLow, settings.bandpassHigh],
+                            samplingRate,
+                        }),
+                    );
                 }
                 return stream;
             }),
-            share()
+            share(),
         );
 
         setFilteredStream$(baseFilteredStream$ as Observable<EEGSample>);
 
         return () => {
-            subscriptionsRef.current.forEach(s => s.unsubscribe());
+            subscriptionsRef.current.forEach((s) => s.unsubscribe());
             subscriptionsRef.current = [];
         };
     }, [status, mode, enableAux]);
@@ -185,30 +205,31 @@ function useMuse(mode: 'muse' | 'athena', enableAux: boolean, view: 'graph' | 'l
     useEffect(() => {
         if (view === 'graph' && filteredStream$ && status === 'connected') {
             const samplingRate = 256;
-            const sub = filteredStream$.pipe(
-                epoch({ duration: 250, interval: 25, samplingRate }) as any,
-                map((epoched: { data: number[][], info: any }) => {
-                    const numSamples = epoched.data[0].length;
-                    const readings: Reading[] = [];
-                    for (let i = 0; i < numSamples; i++) {
-                        const reading: Reading = { index: i, timestamp: Date.now() };
-                        epoched.data.forEach((chData: number[], chIdx: number) => {
-                            reading[`ch${chIdx}`] = chData[i];
-                        });
-                        readings.push(reading);
-                    }
-                    return readings;
-                }),
-                tap((readings: Reading[]) => setData(readings))
-            ).subscribe({
-                error: (err) => {
-                    console.error('[App] Graph Stream error:', err);
-                }
-            });
+            const sub = filteredStream$
+                .pipe(
+                    epoch({ duration: 250, interval: 25, samplingRate }) as any,
+                    map((epoched: { data: number[][]; info: any }) => {
+                        const numSamples = epoched.data[0].length;
+                        const readings: Reading[] = [];
+                        for (let i = 0; i < numSamples; i++) {
+                            const reading: Reading = { index: i, timestamp: Date.now() };
+                            epoched.data.forEach((chData: number[], chIdx: number) => {
+                                reading[`ch${chIdx}`] = chData[i];
+                            });
+                            readings.push(reading);
+                        }
+                        return readings;
+                    }),
+                    tap((readings: Reading[]) => setData(readings)),
+                )
+                .subscribe({
+                    error: (err) => {
+                        console.error('[App] Graph Stream error:', err);
+                    },
+                });
             return () => sub.unsubscribe();
         }
     }, [view, filteredStream$, status]);
-
 
     const disconnect = async () => {
         if (clientRef.current) {
@@ -233,23 +254,34 @@ function useMuse(mode: 'muse' | 'athena', enableAux: boolean, view: 'graph' | 'l
         filterSettings,
         setFilterSettings,
         clientRef,
-        filteredStream$
+        filteredStream$,
     };
 }
 
-const COLORS = ['#B34D4D', '#00B3E6', '#E6B333', '#99FF99', '#FF33FF', '#3366E6', '#999966', '#FF6633', '#FFB399', '#FFFF99'];
+const COLORS = [
+    '#B34D4D',
+    '#00B3E6',
+    '#E6B333',
+    '#99FF99',
+    '#FF33FF',
+    '#3366E6',
+    '#999966',
+    '#FF6633',
+    '#FFB399',
+    '#FFFF99',
+];
 
 // --- Filter Controls Component ---
 
 function FilterControls({
     settings,
-    setSettings
+    setSettings,
 }: {
-    settings: FilterSettings,
-    setSettings: React.Dispatch<React.SetStateAction<FilterSettings>>
+    settings: FilterSettings;
+    setSettings: React.Dispatch<React.SetStateAction<FilterSettings>>;
 }) {
     const updateSetting = (key: keyof FilterSettings, value: any) => {
-        setSettings(prev => ({ ...prev, [key]: value }));
+        setSettings((prev) => ({ ...prev, [key]: value }));
     };
 
     return (
@@ -262,7 +294,7 @@ function FilterControls({
                         <input
                             type="checkbox"
                             checked={settings.notchEnabled}
-                            onChange={e => updateSetting('notchEnabled', e.target.checked)}
+                            onChange={(e) => updateSetting('notchEnabled', e.target.checked)}
                             title="Enable or disable notch filter"
                             aria-label="Enable notch filter"
                         />
@@ -274,7 +306,7 @@ function FilterControls({
                             id="notch-freq"
                             type="number"
                             value={settings.notchFrequency}
-                            onChange={e => updateSetting('notchFrequency', Number(e.target.value))}
+                            onChange={(e) => updateSetting('notchFrequency', Number(e.target.value))}
                             disabled={!settings.notchEnabled}
                             title="Notch filter frequency in Hz"
                             placeholder="60"
@@ -291,7 +323,7 @@ function FilterControls({
                         <input
                             type="checkbox"
                             checked={settings.bandpassEnabled}
-                            onChange={e => updateSetting('bandpassEnabled', e.target.checked)}
+                            onChange={(e) => updateSetting('bandpassEnabled', e.target.checked)}
                             title="Enable or disable bandpass filter"
                             aria-label="Enable bandpass filter"
                         />
@@ -304,7 +336,7 @@ function FilterControls({
                                 id="bandpass-low"
                                 type="number"
                                 value={settings.bandpassLow}
-                                onChange={e => updateSetting('bandpassLow', Number(e.target.value))}
+                                onChange={(e) => updateSetting('bandpassLow', Number(e.target.value))}
                                 disabled={!settings.bandpassEnabled}
                                 title="Bandpass low cutoff frequency in Hz"
                                 placeholder="5"
@@ -319,7 +351,7 @@ function FilterControls({
                                 id="bandpass-high"
                                 type="number"
                                 value={settings.bandpassHigh}
-                                onChange={e => updateSetting('bandpassHigh', Number(e.target.value))}
+                                onChange={(e) => updateSetting('bandpassHigh', Number(e.target.value))}
                                 disabled={!settings.bandpassEnabled}
                                 title="Bandpass high cutoff frequency in Hz"
                                 placeholder="40"
@@ -339,18 +371,29 @@ function EEGGraph({
     data,
     visibleChannels,
     channelNames,
-    yRange
+    yRange,
 }: {
-    data: Reading[],
-    visibleChannels: boolean[],
-    channelNames: string[],
-    yRange: number
+    data: Reading[];
+    visibleChannels: boolean[];
+    channelNames: string[];
+    yRange: number;
 }) {
-    if (data.length === 0) return (
-        <div style={{ height: 400, display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#94a3b8', background: 'rgba(0,0,0,0.2)', borderRadius: '12px' }}>
-            No Data Stream
-        </div>
-    );
+    if (data.length === 0)
+        return (
+            <div
+                style={{
+                    height: 400,
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    color: '#94a3b8',
+                    background: 'rgba(0,0,0,0.2)',
+                    borderRadius: '12px',
+                }}
+            >
+                No Data Stream
+            </div>
+        );
 
     return (
         <div className="glass-panel" style={{ height: 500, width: '100%', padding: '10px' }}>
@@ -358,26 +401,26 @@ function EEGGraph({
                 <LineChart data={data}>
                     <YAxis domain={[-yRange, yRange]} stroke="#475569" fontSize={12} allowDataOverflow={true} />
                     <Legend verticalAlign="top" height={36} />
-                    {visibleChannels.map((visible, idx) => (
-                        visible && (
-                            <Line
-                                key={idx}
-                                type="monotone"
-                                dataKey={`ch${idx}`}
-                                name={channelNames[idx] || `Ch ${idx + 1}`}
-                                stroke={COLORS[idx % COLORS.length]}
-                                dot={false}
-                                isAnimationActive={false}
-                                strokeWidth={1.5}
-                            />
-                        )
-                    ))}
+                    {visibleChannels.map(
+                        (visible, idx) =>
+                            visible && (
+                                <Line
+                                    key={idx}
+                                    type="monotone"
+                                    dataKey={`ch${idx}`}
+                                    name={channelNames[idx] || `Ch ${idx + 1}`}
+                                    stroke={COLORS[idx % COLORS.length]}
+                                    dot={false}
+                                    isAnimationActive={false}
+                                    strokeWidth={1.5}
+                                />
+                            ),
+                    )}
                 </LineChart>
             </ResponsiveContainer>
         </div>
     );
 }
-
 
 // --- Main App ---
 
@@ -388,13 +431,13 @@ export default function App() {
 
     const [mode, setMode] = useState<'muse' | 'athena'>('athena');
     const [enableAux, setEnableAux] = useState(false);
-    const [currentView, setCurrentView] = useState<'graph' | 'logger' | 'recording'>(initialView as any);
+    const [currentView, setCurrentView] = useState<'graph' | 'logger' | 'recording' | 'bands'>(initialView as any);
     const [selectedPreset, setSelectedPreset] = useState<AthenaPreset>('p1045');
     const [visibleChannels, setVisibleChannels] = useState<boolean[]>(new Array(8).fill(true));
     const [yRange, setYRange] = useState(500);
     const [recordingsCount, setRecordingsCount] = useState(0);
 
-    const switchView = (v: 'graph' | 'logger' | 'recording') => {
+    const switchView = (v: 'graph' | 'logger' | 'recording' | 'bands') => {
         setCurrentView(v);
         const url = new URL(window.location.href);
         url.searchParams.set('view', v);
@@ -410,8 +453,18 @@ export default function App() {
         return () => window.removeEventListener('popstate', handlePopState);
     }, []);
 
-    const { connect, disconnect, status, battery, accelerometer, data, filterSettings, setFilterSettings, clientRef, filteredStream$ }
-        = useMuse(mode, enableAux, currentView === 'recording' ? 'graph' : currentView, selectedPreset);
+    const {
+        connect,
+        disconnect,
+        status,
+        battery,
+        accelerometer,
+        data,
+        filterSettings,
+        setFilterSettings,
+        clientRef,
+        filteredStream$,
+    } = useMuse(mode, enableAux, currentView === 'recording' ? 'graph' : currentView, selectedPreset);
 
     // Force Athena mode if in Logger view
     useEffect(() => {
@@ -420,31 +473,31 @@ export default function App() {
         }
     }, [currentView, mode]);
 
-
     const currentChannelNames = mode === 'athena' ? athenaChannelNames : museChannelNames;
 
     useEffect(() => {
-        getRecordings().then(list => setRecordingsCount(list.length));
+        getRecordings().then((list) => setRecordingsCount(list.length));
     }, []);
 
     useEffect(() => {
         if (currentView === 'recording') {
-            getRecordings().then(list => setRecordingsCount(list.length));
+            getRecordings().then((list) => setRecordingsCount(list.length));
         }
     }, [currentView]);
 
     useEffect(() => {
-        const count = mode === 'athena' ? 8 : (enableAux ? 5 : 4);
-        setVisibleChannels(new Array(8).fill(false).map((_, i) => {
-            if (i >= count) return false;
-            const name = currentChannelNames[i] || '';
-            return !name.includes('AUX');
-        }));
+        const count = mode === 'athena' ? 8 : enableAux ? 5 : 4;
+        setVisibleChannels(
+            new Array(8).fill(false).map((_, i) => {
+                if (i >= count) return false;
+                const name = currentChannelNames[i] || '';
+                return !name.includes('AUX');
+            }),
+        );
     }, [mode, enableAux, currentChannelNames]);
 
-
     const toggleChannel = (idx: number) => {
-        setVisibleChannels(prev => {
+        setVisibleChannels((prev) => {
             const next = [...prev];
             next[idx] = !next[idx];
             return next;
@@ -454,7 +507,17 @@ export default function App() {
     return (
         <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '40px 20px' }}>
             <header style={{ marginBottom: '40px', textAlign: 'center' }}>
-                <h1 style={{ fontSize: '3rem', margin: '0 0 8px 0', background: 'linear-gradient(to right, #6366f1, #22d3ee)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Muse JSX</h1>
+                <h1
+                    style={{
+                        fontSize: '3rem',
+                        margin: '0 0 8px 0',
+                        background: 'linear-gradient(to right, #6366f1, #22d3ee)',
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                    }}
+                >
+                    Muse JSX
+                </h1>
                 <p style={{ color: 'var(--text-muted)', fontSize: '1.1rem' }}>Electrophysiology for the modern web.</p>
             </header>
 
@@ -469,7 +532,22 @@ export default function App() {
                     className={`tab-btn ${currentView === 'recording' ? 'active' : ''}`}
                     onClick={() => switchView('recording')}
                 >
-                    EEG Data Logger {recordingsCount > 0 && <span className="badge" style={{ backgroundColor: '#10b981', color: 'white', fontSize: '0.7rem', padding: '2px 6px', borderRadius: '10px', marginLeft: '4px' }}>{recordingsCount}</span>}
+                    EEG Data Logger{' '}
+                    {recordingsCount > 0 && (
+                        <span
+                            className="badge"
+                            style={{
+                                backgroundColor: '#10b981',
+                                color: 'white',
+                                fontSize: '0.7rem',
+                                padding: '2px 6px',
+                                borderRadius: '10px',
+                                marginLeft: '4px',
+                            }}
+                        >
+                            {recordingsCount}
+                        </span>
+                    )}
                 </button>
                 <button
                     className={`tab-btn ${currentView === 'logger' ? 'active' : ''}`}
@@ -477,6 +555,12 @@ export default function App() {
                     disabled={mode !== 'athena'}
                 >
                     Athena Packet Logger
+                </button>
+                <button
+                    className={`tab-btn ${currentView === 'bands' ? 'active' : ''}`}
+                    onClick={() => switchView('bands')}
+                >
+                    Frequency Bands
                 </button>
             </nav>
 
@@ -488,9 +572,18 @@ export default function App() {
                             <div style={{ display: 'flex', gap: '20px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
                                 <div className="input-group">
                                     <label htmlFor="device-mode">Device Mode</label>
-                                    <select id="device-mode" value={mode} onChange={e => setMode(e.target.value as any)} disabled={status === 'connected'} aria-label="Device Mode" title="Select device mode (Athena or Muse Classic)">
+                                    <select
+                                        id="device-mode"
+                                        value={mode}
+                                        onChange={(e) => setMode(e.target.value as any)}
+                                        disabled={status === 'connected'}
+                                        aria-label="Device Mode"
+                                        title="Select device mode (Athena or Muse Classic)"
+                                    >
                                         <option value="athena">Athena</option>
-                                        <option value="muse" disabled={currentView === 'logger'}>Muse (Classic)</option>
+                                        <option value="muse" disabled={currentView === 'logger'}>
+                                            Muse (Classic)
+                                        </option>
                                     </select>
                                 </div>
 
@@ -500,22 +593,30 @@ export default function App() {
                                         <select
                                             id="start-preset"
                                             value={selectedPreset}
-                                            onChange={e => setSelectedPreset(e.target.value as AthenaPreset)}
+                                            onChange={(e) => setSelectedPreset(e.target.value as AthenaPreset)}
                                             disabled={status === 'connected'}
                                             aria-label="Start Preset"
                                             title="Select recording preset"
                                         >
-                                            {ATHENA_PRESETS.map(p => <option key={p} value={p}>{p}</option>)}
+                                            {ATHENA_PRESETS.map((p) => (
+                                                <option key={p} value={p}>
+                                                    {p}
+                                                </option>
+                                            ))}
                                         </select>
                                     </div>
                                 )}
 
                                 {mode === 'muse' && (
-                                    <label className="checkbox-wrapper" style={{ paddingBottom: '10px' }} title="Toggle auxiliary channel">
+                                    <label
+                                        className="checkbox-wrapper"
+                                        style={{ paddingBottom: '10px' }}
+                                        title="Toggle auxiliary channel"
+                                    >
                                         <input
                                             type="checkbox"
                                             checked={enableAux}
-                                            onChange={e => setEnableAux(e.target.checked)}
+                                            onChange={(e) => setEnableAux(e.target.checked)}
                                             disabled={status === 'connected'}
                                             title="Enable auxiliary channel"
                                             aria-label="Enable auxiliary channel"
@@ -529,14 +630,20 @@ export default function App() {
                                     onClick={status === 'connected' ? disconnect : connect}
                                     disabled={status === 'connecting'}
                                 >
-                                    {status === 'connected' ? 'Disconnect' : (status === 'connecting' ? 'Connecting...' : 'Connect Device')}
+                                    {status === 'connected'
+                                        ? 'Disconnect'
+                                        : status === 'connecting'
+                                          ? 'Connecting...'
+                                          : 'Connect Device'}
                                 </button>
                             </div>
 
                             <div style={{ marginTop: '20px', display: 'flex', gap: '24px', fontSize: '0.9rem' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     <span style={{ color: 'var(--text-muted)' }}>Status:</span>
-                                    <span className={`badge ${status === 'connected' ? 'badge-success' : 'badge-danger'}`}>
+                                    <span
+                                        className={`badge ${status === 'connected' ? 'badge-success' : 'badge-danger'}`}
+                                    >
                                         {status.toUpperCase()}
                                     </span>
                                 </div>
@@ -549,11 +656,11 @@ export default function App() {
                     )}
 
                     {currentView === 'graph' && (
-                        <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                            <FilterControls
-                                settings={filterSettings}
-                                setSettings={setFilterSettings}
-                            />
+                        <div
+                            className="animate-fade-in"
+                            style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}
+                        >
+                            <FilterControls settings={filterSettings} setSettings={setFilterSettings} />
 
                             <EEGRecorder
                                 stream$={filteredStream$}
@@ -566,28 +673,42 @@ export default function App() {
                             />
 
                             <div className="glass-panel" style={{ padding: '24px' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        marginBottom: '16px',
+                                    }}
+                                >
                                     <h3 style={{ margin: 0 }}>EEG Channels</h3>
                                     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                                         {visibleChannels.map((vis, idx) => {
                                             const channelLabel = currentChannelNames[idx] || `Ch ${idx + 1}`;
                                             return (
-                                            <label
-                                                key={idx}
-                                                className="checkbox-wrapper"
-                                                style={{ fontSize: '0.85rem', color: COLORS[idx % COLORS.length], border: `1px solid ${vis ? COLORS[idx % COLORS.length] : 'var(--panel-border)'}`, padding: '4px 8px', borderRadius: '6px', background: vis ? 'rgba(255,255,255,0.05)' : 'transparent' }}
-                                                title={`Toggle visibility of ${channelLabel}`}
-                                            >
-                                                <input
-                                                    type="checkbox"
-                                                    checked={vis}
-                                                    onChange={() => toggleChannel(idx)}
-                                                    title={`Show or hide ${channelLabel}`}
-                                                    aria-label={`Toggle ${channelLabel}`}
-                                                />
-                                                {channelLabel}
-                                            </label>
-                                        );
+                                                <label
+                                                    key={idx}
+                                                    className="checkbox-wrapper"
+                                                    style={{
+                                                        fontSize: '0.85rem',
+                                                        color: COLORS[idx % COLORS.length],
+                                                        border: `1px solid ${vis ? COLORS[idx % COLORS.length] : 'var(--panel-border)'}`,
+                                                        padding: '4px 8px',
+                                                        borderRadius: '6px',
+                                                        background: vis ? 'rgba(255,255,255,0.05)' : 'transparent',
+                                                    }}
+                                                    title={`Toggle visibility of ${channelLabel}`}
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={vis}
+                                                        onChange={() => toggleChannel(idx)}
+                                                        title={`Show or hide ${channelLabel}`}
+                                                        aria-label={`Toggle ${channelLabel}`}
+                                                    />
+                                                    {channelLabel}
+                                                </label>
+                                            );
                                         })}
                                     </div>
                                 </div>
@@ -598,13 +719,33 @@ export default function App() {
                                     yRange={yRange}
                                 />
 
-                                <div style={{ marginTop: '24px', paddingTop: '16px', borderTop: '1px solid var(--panel-border)' }}>
+                                <div
+                                    style={{
+                                        marginTop: '24px',
+                                        paddingTop: '16px',
+                                        borderTop: '1px solid var(--panel-border)',
+                                    }}
+                                >
                                     <div className="input-group" style={{ maxWidth: '400px' }}>
-                                        <label style={{ fontWeight: 600, display: 'flex', justifyContent: 'space-between' }} htmlFor="y-axis-range">
+                                        <label
+                                            style={{
+                                                fontWeight: 600,
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                            }}
+                                            htmlFor="y-axis-range"
+                                        >
                                             <span>Y-Axis Range (± µV)</span>
                                             <span style={{ color: 'var(--accent)' }}>{yRange} µV</span>
                                         </label>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px' }}>
+                                        <div
+                                            style={{
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '12px',
+                                                marginTop: '8px',
+                                            }}
+                                        >
                                             <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>10</span>
                                             <input
                                                 id="y-axis-range"
@@ -613,7 +754,7 @@ export default function App() {
                                                 max="3000"
                                                 step="10"
                                                 value={yRange}
-                                                onChange={e => setYRange(Number(e.target.value))}
+                                                onChange={(e) => setYRange(Number(e.target.value))}
                                                 style={{ flex: 1 }}
                                                 aria-label="Y-Axis Range slider"
                                                 title="Y-Axis Range in microvolts (10-3000 µV)"
@@ -627,11 +768,7 @@ export default function App() {
                     )}
 
                     {currentView === 'logger' && mode === 'athena' && (
-                        <AthenaLogger
-                            clientRef={clientRef}
-                            status={status}
-                            preset={selectedPreset}
-                        />
+                        <AthenaLogger clientRef={clientRef} status={status} preset={selectedPreset} />
                     )}
 
                     {currentView === 'recording' && (
@@ -644,30 +781,70 @@ export default function App() {
                             onRecordingsChange={setRecordingsCount}
                         />
                     )}
+
+                    {currentView === 'bands' && (
+                        <FrequencyBands
+                            filteredStream$={filteredStream$}
+                            status={status}
+                            channelNames={currentChannelNames}
+                        />
+                    )}
                 </main>
 
                 {currentView === 'graph' && (
                     <aside style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                         <div className="glass-panel" style={{ padding: '20px' }}>
-                            <h3 style={{ marginTop: 0, fontSize: '1rem', borderBottom: '1px solid var(--panel-border)', paddingBottom: '10px' }}>Sensors</h3>
+                            <h3
+                                style={{
+                                    marginTop: 0,
+                                    fontSize: '1rem',
+                                    borderBottom: '1px solid var(--panel-border)',
+                                    paddingBottom: '10px',
+                                }}
+                            >
+                                Sensors
+                            </h3>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '16px' }}>
                                 <div>
-                                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Accelerometer</label>
+                                    <label
+                                        style={{
+                                            fontSize: '0.75rem',
+                                            color: 'var(--text-muted)',
+                                            textTransform: 'uppercase',
+                                            letterSpacing: '0.05em',
+                                        }}
+                                    >
+                                        Accelerometer
+                                    </label>
                                     <div className="grid grid-cols-2" style={{ marginTop: '8px', fontSize: '0.9rem' }}>
-                                        <div><span style={{ color: 'var(--text-muted)' }}>X:</span> {accelerometer.x.toFixed(2)}</div>
-                                        <div><span style={{ color: 'var(--text-muted)' }}>Y:</span> {accelerometer.y.toFixed(2)}</div>
-                                        <div><span style={{ color: 'var(--text-muted)' }}>Z:</span> {accelerometer.z.toFixed(2)}</div>
+                                        <div>
+                                            <span style={{ color: 'var(--text-muted)' }}>X:</span>{' '}
+                                            {accelerometer.x.toFixed(2)}
+                                        </div>
+                                        <div>
+                                            <span style={{ color: 'var(--text-muted)' }}>Y:</span>{' '}
+                                            {accelerometer.y.toFixed(2)}
+                                        </div>
+                                        <div>
+                                            <span style={{ color: 'var(--text-muted)' }}>Z:</span>{' '}
+                                            {accelerometer.z.toFixed(2)}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
-                        <div className="glass-panel" style={{ padding: '20px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                            <p style={{ margin: 0 }}>Tip: Real-time filtering uses RxJS pipes for low-latency signal processing.</p>
+                        <div
+                            className="glass-panel"
+                            style={{ padding: '20px', fontSize: '0.85rem', color: 'var(--text-muted)' }}
+                        >
+                            <p style={{ margin: 0 }}>
+                                Tip: Real-time filtering uses RxJS pipes for low-latency signal processing.
+                            </p>
                         </div>
                     </aside>
                 )}
-            </div >
-        </div >
+            </div>
+        </div>
     );
 }
