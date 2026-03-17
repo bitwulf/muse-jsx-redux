@@ -34,6 +34,7 @@ export type FrequencyBandSettings = {
     bandRanges: BandRanges;
     visibleBands: Record<BandName, boolean>;
     historySeconds: number;
+    averageMode: boolean;
 };
 
 // --- Constants ---
@@ -69,6 +70,7 @@ const DEFAULT_SETTINGS: FrequencyBandSettings = {
         gamma: true,
     },
     historySeconds: 30,
+    averageMode: false,
 };
 
 // --- Hook ---
@@ -104,16 +106,30 @@ export function useFrequencyBands(filteredStream$: Observable<EEGSample> | null,
             )
             .subscribe({
                 next: (bandPowers: Record<BandName, number[]>) => {
-                    const ch = settingsRef.current.selectedChannel;
-                    const maxHistory = settingsRef.current.historySeconds;
+                    const { selectedChannel, historySeconds: maxHistory, averageMode } = settingsRef.current;
+
+                    // Helper: compute mean of valid (finite, non-null) values across all channels
+                    const channelMean = (values: number[]): number => {
+                        const valid = (values ?? []).filter((v) => v != null && isFinite(v) && !isNaN(v));
+                        if (valid.length === 0) return 0;
+                        return valid.reduce((sum, v) => sum + v, 0) / valid.length;
+                    };
+
+                    const getValue = (band: BandName): number => {
+                        const arr = bandPowers[band];
+                        if (!arr || arr.length === 0) return 0;
+                        if (averageMode) return channelMean(arr);
+                        const v = arr[selectedChannel];
+                        return v != null && isFinite(v) ? v : 0;
+                    };
 
                     const point: BandPoint = {
                         time: (Date.now() - startTimeRef.current) / 1000,
-                        delta: bandPowers.delta?.[ch] ?? 0,
-                        theta: bandPowers.theta?.[ch] ?? 0,
-                        alpha: bandPowers.alpha?.[ch] ?? 0,
-                        beta: bandPowers.beta?.[ch] ?? 0,
-                        gamma: bandPowers.gamma?.[ch] ?? 0,
+                        delta: getValue('delta'),
+                        theta: getValue('theta'),
+                        alpha: getValue('alpha'),
+                        beta: getValue('beta'),
+                        gamma: getValue('gamma'),
                     };
 
                     bufferRef.current = [...bufferRef.current, point];
@@ -136,7 +152,14 @@ export function useFrequencyBands(filteredStream$: Observable<EEGSample> | null,
             bufferRef.current = [];
         };
         // Re-subscribe when stream or pipeline params change
-    }, [filteredStream$, settings.bins, settings.epochDuration, settings.epochInterval, settings.bandRanges]);
+    }, [
+        filteredStream$,
+        settings.bins,
+        settings.epochDuration,
+        settings.epochInterval,
+        settings.bandRanges,
+        settings.averageMode,
+    ]);
 
     return bandData;
 }
@@ -293,15 +316,53 @@ export function FrequencyBandControls({
             <h3 style={{ marginTop: 0, marginBottom: '16px' }}>Frequency Band Settings</h3>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                {/* Row 0: Average Mode toggle */}
+                <div
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '12px 16px',
+                        borderRadius: '10px',
+                        background: settings.averageMode ? 'rgba(99, 102, 241, 0.12)' : 'rgba(255, 255, 255, 0.03)',
+                        border: `1px solid ${settings.averageMode ? 'rgba(99, 102, 241, 0.4)' : 'var(--panel-border)'}`,
+                        transition: 'all 0.2s ease',
+                    }}
+                >
+                    <div>
+                        <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>Average Mode</div>
+                        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                            {settings.averageMode
+                                ? 'Showing mean power across all active channels'
+                                : 'Showing single-channel band power'}
+                        </div>
+                    </div>
+                    <label className="toggle-switch" aria-label="Toggle Average Mode" title="Toggle Average Mode">
+                        <input
+                            type="checkbox"
+                            checked={settings.averageMode}
+                            onChange={(e) => update('averageMode', e.target.checked)}
+                        />
+                        <span className="toggle-slider" />
+                    </label>
+                </div>
+
                 {/* Row 1: Channel, Bins, Scale */}
                 <div className="grid grid-cols-3" style={{ gap: '16px' }}>
                     <div className="input-group">
-                        <label htmlFor="fb-channel">Channel</label>
+                        <label
+                            htmlFor="fb-channel"
+                            style={{ opacity: settings.averageMode ? 0.45 : 1, transition: 'opacity 0.2s' }}
+                        >
+                            Channel{settings.averageMode ? ' (disabled in Avg Mode)' : ''}
+                        </label>
                         <select
                             id="fb-channel"
                             value={settings.selectedChannel}
                             onChange={(e) => update('selectedChannel', Number(e.target.value))}
+                            disabled={settings.averageMode}
                             aria-label="Select EEG channel for band power"
+                            style={{ opacity: settings.averageMode ? 0.45 : 1, transition: 'opacity 0.2s' }}
                         >
                             {channelNames.map((name, idx) => (
                                 <option key={idx} value={idx}>
@@ -522,13 +583,43 @@ export function FrequencyBands({ filteredStream$, status, channelNames }: Freque
                     }}
                 >
                     <h3 style={{ margin: 0 }}>Frequency Band Power</h3>
-                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                        Channel:{' '}
-                        <span style={{ color: 'var(--accent)' }}>
-                            {channelNames[settings.selectedChannel] || `Ch ${settings.selectedChannel + 1}`}
-                        </span>
-                        {' · '}
-                        {bandData.length} points
+                    <div
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            fontSize: '0.85rem',
+                            color: 'var(--text-muted)',
+                            flexWrap: 'wrap',
+                        }}
+                    >
+                        {settings.averageMode ? (
+                            <span
+                                style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '5px',
+                                    color: '#a5b4fc',
+                                    background: 'rgba(99,102,241,0.15)',
+                                    border: '1px solid rgba(99,102,241,0.35)',
+                                    borderRadius: '6px',
+                                    padding: '2px 8px',
+                                    fontSize: '0.8rem',
+                                    fontWeight: 600,
+                                }}
+                            >
+                                Avg across all channels
+                            </span>
+                        ) : (
+                            <span>
+                                Channel:{' '}
+                                <span style={{ color: 'var(--accent)' }}>
+                                    {channelNames[settings.selectedChannel] || `Ch ${settings.selectedChannel + 1}`}
+                                </span>
+                            </span>
+                        )}
+                        <span style={{ color: 'var(--panel-border)' }}>·</span>
+                        <span>{bandData.length} points</span>
                     </div>
                 </div>
                 <FrequencyBandGraph data={bandData} settings={settings} />
